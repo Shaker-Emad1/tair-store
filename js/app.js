@@ -588,7 +588,7 @@ function initTryon(pid){
 }
 
 function vFeatures(){
-  const done = 24;
+  const done = 30;
   return `<section class="section">
     <div class="sec-head"><h2>${t("ft.title")}<small>${t("ft.sub")}</small></h2></div>
     <div class="progress-hero"><b>${done}/30</b><div class="pbar"><i style="width:${done/30*100}%"></i></div><span>${t("ft.done")}</span></div>
