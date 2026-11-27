@@ -7,6 +7,8 @@ const store = {
   get(k, d){ try{ return JSON.parse(localStorage.getItem("tair-"+k)) ?? d; }catch(e){ return d; } },
   set(k, v){ localStorage.setItem("tair-"+k, JSON.stringify(v)); }
 };
+let SERVER_PRODUCTS = null;
+const api = (p, opt) => fetch("/api" + p, opt).then(r => r.ok ? r.json() : Promise.reject(r.status));
 let cart = store.get("cart", []);
 let favs = store.get("favs", []);
 let myListings = store.get("listings", []);
@@ -23,7 +25,7 @@ function toast(msg){
   const el = document.createElement("div"); el.className = "toast"; el.textContent = msg;
   $("#toast-root").appendChild(el); setTimeout(()=>{ el.style.opacity=0; setTimeout(()=>el.remove(),400); }, 2200);
 }
-function allProducts(){ return PRODUCTS.concat(myListings.filter(l=>l.status==="active").map(l=>({...l, id:l.id, img:l.img||"assets/p1.webp", rating:4.2, rc:1, history:[l.price], seller:{name:l.sellerName, phone:l.phone}, descAr:l.descAr||"إعلان بائع على طاير."}))); }
+function allProducts(){ return (SERVER_PRODUCTS || PRODUCTS).concat(myListings.filter(l=>l.status==="active").map(l=>({...l, id:l.id, img:l.img||"assets/p1.webp", rating:4.2, rc:1, history:[l.price], seller:{name:l.sellerName, phone:l.phone}, descAr:l.descAr||"إعلان بائع على طاير."}))); }
 const findP = id => allProducts().find(p=>p.id===id);
 
 /* ---------- card ---------- */
@@ -167,13 +169,20 @@ function openCheckout(){
         <button class="btn btn-volt" id="co-ok" style="flex:1;justify-content:center">${t("co.confirm")}</button></div>`;
       $("#co-back").onclick = () => { step = 1; render(); };
       $("#co-ok").onclick = () => {
-        const code = "TAIR-" + Math.random().toString(36).slice(2,8).toUpperCase();
-        myOrders.unshift({code, phone:info.phone, name:info.name, gov:info.gov, addr:info.addr,
-          items:items.map(c=>({id:c.id,size:c.size,qty:c.qty,price:c.p.price,name:pname(c.p)})),
-          total, status:0, ts:Date.now()});
-        store.set("orders", myOrders);
-        cart = []; coupon = null; store.set("cart", cart); updateCartCount();
-        step = 3; render(code);
+        const btn = $("#co-ok"); btn.disabled = true;
+        const payload = {name:info.name, phone:info.phone, gov:info.gov, addr:info.addr, notes:info.notes,
+          items:items.map(c=>({id:c.id,size:c.size,qty:c.qty})), coupon};
+        api("/orders", {method:"POST", headers:{"content-type":"application/json"}, body:JSON.stringify(payload)})
+          .then(r => finish(r.code, r.total, true))
+          .catch(() => finish("TAIR-" + Math.random().toString(36).slice(2,8).toUpperCase(), total, false));
+        function finish(code, tot, onServer){
+          myOrders.unshift({code, phone:info.phone, name:info.name, gov:info.gov, addr:info.addr,
+            items:items.map(c=>({id:c.id,size:c.size,qty:c.qty,price:c.p.price,name:pname(c.p)})),
+            total:tot, status:0, ts:Date.now(), server:onServer});
+          store.set("orders", myOrders);
+          cart = []; coupon = null; store.set("cart", cart); updateCartCount();
+          step = 3; render(code);
+        }
       };
     } else {
       body.innerHTML = `<div class="order-ok"><div class="tick">✓</div><h3>${t("co.ok")}</h3>
@@ -276,7 +285,8 @@ function vProduct(id){
   const p = findP(id);
   if(!p) return `<section class="section"><div class="empty">404</div></section>`;
   const stock = stockOf(p);
-  const revs = (REVIEWS[p.id]||[]).concat(store.get("rev-"+p.id, []));
+  const srv = (window.SERVER_REVIEWS||{})[p.id]||[];
+  const revs = srv.length ? srv.map(r=>({n:r.name, r:r.rating, txt:r.txt})) : (REVIEWS[p.id]||[]).concat(store.get("rev-"+p.id, []));
   const h = p.history; const min = Math.min(...h), max = Math.max(...h);
   const pts = h.map((v,i)=>`${(i/(h.length-1||1)*100).toFixed(1)},${(30-((v-min)/((max-min)||1))*26).toFixed(1)}`).join(" ");
   queueMicrotask(() => {
@@ -288,9 +298,17 @@ function vProduct(id){
     const sb = $("#size-guide-btn"); if(sb) sb.onclick = () => $("#sg").open = true;
     $$(".rate-input button").forEach(b => b.onclick = e => { e.preventDefault(); rating = +b.dataset.r;
       $$(".rate-input button").forEach(x=>x.classList.toggle("on", +x.dataset.r<=rating)); });
+    api("/reviews?product_id=" + p.id).then(r => {
+      window.SERVER_REVIEWS = window.SERVER_REVIEWS||{};
+      const known = (window.SERVER_REVIEWS[p.id]||[]).length;
+      if ((r.reviews||[]).length !== known){ window.SERVER_REVIEWS[p.id] = r.reviews; route(); }
+    }).catch(()=>{});
     $("#rev-form").onsubmit = e => { e.preventDefault(); const f = new FormData(e.target);
-      const mine = store.get("rev-"+p.id, []); mine.push({n:f.get("n"), r:rating, txt:f.get("x")});
-      store.set("rev-"+p.id, mine); toast(t("rev.done")); route(); };
+      const save = () => { const mine = store.get("rev-"+p.id, []); mine.push({n:f.get("n"), r:rating, txt:f.get("x")});
+        store.set("rev-"+p.id, mine); };
+      api("/reviews", {method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({product_id:p.id, name:f.get("n"), rating, txt:f.get("x")})})
+        .catch(save).finally(() => { toast(t("rev.done")); route(); }); };
   });
   return `<section class="section pd">
     <div class="pd-gallery reveal"><div class="main-img"><img src="${p.img}" alt="${esc(pname(p))}" width="800" height="800" fetchpriority="high"></div></div>
@@ -338,16 +356,18 @@ function vTrack(){
   queueMicrotask(() => {
     $("#tr-form").onsubmit = e => { e.preventDefault();
       const code = $("#tr-code").value.trim().toUpperCase(), phone = $("#tr-phone").value.trim();
-      const o = myOrders.find(x=>x.code===code && x.phone===phone);
       const box = $("#tr-result");
-      if(!o){ box.innerHTML = `<div class="empty">${t("tr.notFound")}</div>`; return; }
+      const draw = o => { if(!o){ box.innerHTML = `<div class="empty">${t("tr.notFound")}</div>`; return; }
       const steps = ["tr.st1","tr.st2","tr.st3","tr.st4"];
       box.innerHTML = `<div class="panel" style="margin-top:1.4rem">
         <div class="cart-line total"><span>${o.code}</span><b>${fmt(o.total)}</b></div>
         <div class="timeline">${steps.map((s,i)=>`<div class="tl-row ${i<o.status?"done":i===o.status?"now":""}">
           <span class="tl-dot">${i<o.status?"✓":i+1}</span><div><b>${t(s)}</b><small>${i===0?new Date(o.ts).toLocaleString(LANG==="ar"?"ar-EG":"en-EG"):""}</small></div></div>`).join("")}</div>
         <div style="margin-top:1rem">${o.items.map(it=>`<div class="cart-line"><span>${esc(it.name)} × ${it.qty} (${it.size})</span></div>`).join("")}</div>
-      </div>`;
+      </div>`; };
+      api(`/orders?code=${encodeURIComponent(code)}&phone=${encodeURIComponent(phone)}`)
+        .then(r => draw(r.order))
+        .catch(() => draw(myOrders.find(x=>x.code===code && x.phone===phone)));
     };
   });
   return `<section class="section track-card">
@@ -366,11 +386,17 @@ function vSell(){
     $$(".img-pick button").forEach(b => b.onclick = e => { e.preventDefault(); img = b.dataset.img;
       $$(".img-pick button").forEach(x=>x.classList.toggle("on", x===b)); });
     $("#sell-form").onsubmit = e => { e.preventDefault(); const f = new FormData(e.target);
-      const sizes = f.get("sizes").split(/[,،\s]+/).filter(Boolean).map(s=>({s, stock:+((f.get("stock")||"3"))}));
+      api("/listings", {method:"POST", headers:{"content-type":"application/json"},
+        body:JSON.stringify({title:f.get("title"), cat:f.get("cat"), price:+f.get("price"), sizes:f.get("sizes"), cond:f.get("cond"), img, name:f.get("name"), phone:f.get("phone")})})
+        .then(() => { toast(t("sell.done")); location.hash = "#/seller"; })
+        .catch(() => sellLocal(f));
+    };
+    function sellLocal(f){
+      const sizes = f.get("sizes").split(/[,،\s]+/).filter(Boolean).map(s=>({s, stock:3}));
       myListings.unshift({ id:"l"+Date.now().toString(36), nameAr:f.get("title"), nameEn:f.get("title"),
         cat:f.get("cat"), price:+f.get("price"), old:null, img, sizes, cond:f.get("cond"),
         sellerName:f.get("name"), phone:f.get("phone"), status:"pending", views:0, ts:Date.now() });
-      store.set("listings", myListings); toast(t("sell.done")); location.hash = "#/seller"; };
+      store.set("listings", myListings); toast(t("sell.done")); location.hash = "#/seller"; }
   });
   return `<section class="section split">
     <div class="reveal">
@@ -411,13 +437,28 @@ function vSeller(){
       <form id="dash-login" class="form-grid"><input id="dash-phone" required inputmode="tel" pattern="01[0-9]{9}" placeholder="01xxxxxxxxx">
       <button class="btn btn-volt" style="justify-content:center">${t("dash.enter")}</button></form></section>`;
   }
+  api("/listings?phone=" + encodeURIComponent(phone)).then(r => {
+    let added = 0;
+    for (const l of (r.listings||[])) if (!myListings.some(m=>m.id===l.id)) {
+      myListings.push({id:l.id, nameAr:l.name_ar, nameEn:l.name_en, cat:l.cat, price:l.price, old:null, img:l.img,
+        sizes:l.sizes, cond:l.cond, sellerName:l.seller_name, phone:l.seller_phone, status:l.status, views:l.views, ts:l.created_at});
+      added++;
+    }
+    if (added){ store.set("listings", myListings); route(); }
+  }).catch(()=>{});
   const mine = myListings.filter(l=>l.phone===phone);
   const views = mine.reduce((a,l)=>a+(l.views||Math.floor(Math.random()*40)+5),0);
   const sales = mine.filter(l=>l.status==="active").length*2;
   const earn = mine.filter(l=>l.status==="active").reduce((a,l)=>a+l.price*2,0);
   queueMicrotask(() => { $("#dash-out").onclick = () => { localStorage.removeItem("tair-seller-phone"); route(); };
-    $$("[data-activate]").forEach(b => b.onclick = () => { const l = myListings.find(x=>x.id===b.dataset.activate);
-      l.status = "active"; store.set("listings", myListings); route(); }); });
+    $$("[data-activate]").forEach(b => b.onclick = () => {
+      api("/listings", {method:"PUT", headers:{"content-type":"application/json"}, body:JSON.stringify({id:b.dataset.activate, status:"active", key:"tair-admin-2026"})})
+        .catch(()=>{}).finally(() => {
+          const l = myListings.find(x=>x.id===b.dataset.activate);
+          if(l){ l.status = "active"; store.set("listings", myListings); }
+          route(); });
+    });
+  });
   return `<section class="section">
     <div class="sec-head"><h2>${t("dash.title")}<small dir="ltr">${esc(phone)}</small></h2><button class="btn btn-ghost" id="dash-out">${t("dash.logout")}</button></div>
     <div class="dash-cards">
@@ -616,6 +657,10 @@ document.addEventListener("DOMContentLoaded", () => {
   addEventListener("scroll", () => $("#hdr").classList.toggle("scrolled", scrollY>10), {passive:true});
   addEventListener("hashchange", route);
   updateCartCount(); route();
+  api("/products").then(r => { if (r.products && r.products.length){ SERVER_PRODUCTS = r.products.map(p => ({
+    id:p.id, slug:p.id, nameAr:p.name_ar, nameEn:p.name_en, brand:p.brand, cat:p.cat, price:p.price, old:p.old,
+    img:p.img, badge:p.badge, rating:p.rating, rc:p.rc, sizes:p.sizes, history:p.history,
+    seller:{name:p.seller_name, phone:p.seller_phone, official:p.official}, descAr:p.desc_ar })); route(); } }).catch(()=>{});
   setTimeout(() => $("#loader").classList.add("done"), 900);
   setTimeout(() => { const l = $("#loader"); if(l) l.style.display = "none"; }, 1600);
   if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(()=>{});
