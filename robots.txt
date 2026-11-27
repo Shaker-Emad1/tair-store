@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://tair-store.pages.dev/sitemap.xml

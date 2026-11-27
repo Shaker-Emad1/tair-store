@@ -1,0 +1,10 @@
+const C = "tair-v1";
+const ASSETS = ["./","./index.html","./css/style.css","./js/i18n.js","./js/data.js","./js/app.js","./favicon.svg"];
+self.addEventListener("install", e => { e.waitUntil(caches.open(C).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
+self.addEventListener("activate", e => { e.waitUntil(clients.claim()); });
+self.addEventListener("fetch", e => {
+  e.respondWith(caches.match(e.request).then(hit => hit || fetch(e.request).then(r => {
+    if(r.ok && e.request.url.startsWith(self.location.origin)){ const cl = r.clone(); caches.open(C).then(c => c.put(e.request, cl)); }
+    return r;
+  }).catch(() => caches.match("./index.html"))));
+});
